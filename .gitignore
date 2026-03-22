@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+**/build/
+
+# Local config
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# Android
+captures/
+.externalNativeBuild/
+.cxx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nested local repo copy
+rent-ledger-app/
