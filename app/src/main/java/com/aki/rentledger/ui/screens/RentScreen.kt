@@ -4,12 +4,14 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +25,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
@@ -70,6 +76,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.aki.rentledger.ApartmentUiState
@@ -116,7 +123,7 @@ fun RentScreen(
     var showApartmentSheet by rememberSaveable { mutableStateOf(false) }
     var newApartmentName by rememberSaveable { mutableStateOf("") }
     var selectedFloorNumber by rememberSaveable { mutableStateOf<Int?>(null) }
-    var expandedRoomNumber by rememberSaveable { mutableStateOf<Int?>(null) }
+    var roomDialogTarget by remember { mutableStateOf<RoomDialogTarget?>(null) }
     var floorPendingDelete by remember { mutableStateOf<Int?>(null) }
     var apartmentPendingEdit by remember { mutableStateOf<ApartmentUiState?>(null) }
     var roomPendingAction by remember { mutableStateOf<RoomUiState?>(null) }
@@ -134,7 +141,6 @@ fun RentScreen(
     var showMeterEntryPage by rememberSaveable { mutableStateOf(false) }
     var showApartmentOverviewPage by rememberSaveable { mutableStateOf(false) }
     var showCollectionStatusPage by rememberSaveable { mutableStateOf(false) }
-    var expandedRoomBounds by remember { mutableStateOf<Rect?>(null) }
     var floorDrawerBounds by remember { mutableStateOf<Rect?>(null) }
     var screenPositionInRoot by remember { mutableStateOf(Offset.Zero) }
 
@@ -144,6 +150,12 @@ fun RentScreen(
     val selectedFloorRooms = selectedFloorNumber?.let { floor ->
         selectedApartment?.roomsByFloor?.get(floor).orEmpty()
     }.orEmpty()
+    val dialogRoom = roomDialogTarget?.let { target ->
+        selectedApartment
+            ?.roomsByFloor
+            ?.get(target.floorNumber)
+            ?.firstOrNull { it.roomNumber == target.roomNumber }
+    }
     val currentMonth = YearMonth.now()
     val monthlyRoomCharges = selectedApartment
         ?.roomsByFloor
@@ -260,8 +272,8 @@ fun RentScreen(
             selectedFloorNumber in floorNumbers -> selectedFloorNumber
             else -> floorNumbers.first()
         }
-        if (expandedRoomNumber !in selectedFloorRooms.map { it.roomNumber }) {
-            expandedRoomNumber = null
+        if (roomDialogTarget != null && dialogRoom == null) {
+            roomDialogTarget = null
         }
     }
 
@@ -269,10 +281,6 @@ fun RentScreen(
         showMeterEntryPage = false
         showApartmentOverviewPage = false
         showCollectionStatusPage = false
-    }
-
-    LaunchedEffect(expandedRoomNumber) {
-        expandedRoomBounds = null
     }
 
     LaunchedEffect(showFloorDrawer) {
@@ -320,14 +328,10 @@ fun RentScreen(
             .onGloballyPositioned { coordinates ->
                 screenPositionInRoot = coordinates.positionInRoot()
             }
-            .pointerInput(expandedRoomNumber, expandedRoomBounds, screenPositionInRoot) {
+            .pointerInput(showFloorDrawer, floorDrawerBounds, screenPositionInRoot) {
                 detectTapGestures { tapOffset ->
                     focusManager.clearFocus(force = true)
                     val tapPositionInRoot = screenPositionInRoot + tapOffset
-                    val currentRoomBounds = expandedRoomBounds
-                    if (currentRoomBounds != null && !currentRoomBounds.contains(tapPositionInRoot)) {
-                        expandedRoomNumber = null
-                    }
                     val currentDrawerBounds = floorDrawerBounds
                     if (showFloorDrawer && (currentDrawerBounds == null || !currentDrawerBounds.contains(tapPositionInRoot))) {
                         showFloorDrawer = false
@@ -384,13 +388,18 @@ fun RentScreen(
                                 }
                             }
                         ),
+                    shape = RoundedCornerShape(28.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                    ),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(18.dp),
+                            .padding(horizontal = 20.dp, vertical = 18.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
@@ -407,7 +416,9 @@ fun RentScreen(
                             text = selectedApartmentName ?: "\u6682\u672a\u9009\u62e9\u516c\u5bd3",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                         if (showTopCardHints) {
                             Spacer(modifier = Modifier.height(6.dp))
@@ -435,13 +446,18 @@ fun RentScreen(
                                 showMeterEntryPage = true
                             }
                         ),
+                    shape = RoundedCornerShape(28.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                    ),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(18.dp),
+                            .padding(horizontal = 18.dp, vertical = 18.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
@@ -519,8 +535,13 @@ fun RentScreen(
             ) {
                 Card(
                     modifier = Modifier.fillMaxSize(),
+                    shape = RoundedCornerShape(30.dp),
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)
+                    ),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                 ) {
                     if (showApartmentOverviewPage) {
                         ApartmentSituationPanel(
@@ -530,71 +551,36 @@ fun RentScreen(
                                 .padding(20.dp)
                         )
                     } else {
-                        LazyColumn(
+                        LazyVerticalGrid(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
+                            columns = GridCells.Fixed(3),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             if (selectedApartment != null && selectedFloorNumber != null && selectedFloorRooms.isNotEmpty()) {
                                 val currentFloorNumber = selectedFloorNumber!!
                                 items(selectedFloorRooms, key = { it.roomNumber }) { room ->
-                                    val currentMonthValue = room.valuesForMonth(currentMonth)
-                                    val currentMonthPlaceholder = room
-                                        .valuesForMonth(currentMonth.minusMonths(1))
-                                    RoomCard(
+                                    RoomGridCard(
                                         room = room,
-                                        monthValue = currentMonthValue,
-                                        placeholderValue = currentMonthPlaceholder,
-                                        expanded = expandedRoomNumber == room.roomNumber,
-                                        onExpandedBoundsChanged = { bounds ->
-                                            if (expandedRoomNumber == room.roomNumber) {
-                                                expandedRoomBounds = bounds
-                                            }
-                                        },
+                                        status = room.statusForMonth(currentMonth),
                                         onCardClick = {
                                             showFloorDrawer = false
-                                            expandedRoomNumber =
-                                                if (expandedRoomNumber == room.roomNumber) null else room.roomNumber
+                                            roomDialogTarget = RoomDialogTarget(
+                                                floorNumber = currentFloorNumber,
+                                                roomNumber = room.roomNumber
+                                            )
                                         },
                                         onCardLongPress = {
                                             showFloorDrawer = false
                                             roomPendingAction = room
-                                        },
-                                        onRentChange = { rent ->
-                                            onUpdateRoom(
-                                                selectedApartment.name,
-                                                currentFloorNumber,
-                                                room.updateValuesForMonth(currentMonth) { it.copy(rent = rent) }
-                                            )
-                                        },
-                                        onWaterMeterChange = { meter ->
-                                            onUpdateRoom(
-                                                selectedApartment.name,
-                                                currentFloorNumber,
-                                                room.updateValuesForMonth(currentMonth) { it.copy(waterMeter = meter) }
-                                            )
-                                        },
-                                        onElectricMeterChange = { meter ->
-                                            onUpdateRoom(
-                                                selectedApartment.name,
-                                                currentFloorNumber,
-                                                room.updateValuesForMonth(currentMonth) { it.copy(electricMeter = meter) }
-                                            )
-                                        },
-                                        onSettleCurrentMonth = {
-                                            showFloorDrawer = false
-                                            roomPendingSettlement = PendingSettlement(
-                                                floorNumber = currentFloorNumber,
-                                                room = room
-                                            )
                                         }
                                     )
                                 }
                             }
 
-                            item {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
                                 Button(
                                     onClick = {
                                         showFloorDrawer = false
@@ -608,7 +594,7 @@ fun RentScreen(
                             }
 
                             if (selectedApartment != null && selectedFloorNumber != null && selectedFloorRooms.isEmpty()) {
-                                item {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
                                     Text(
                                         text = "\u5f53\u524d\u697c\u5c42\u8fd8\u6ca1\u6709\u623f\u95f4\uff0c\u70b9\u4e0a\u9762\u7684\u6309\u94ae\u65b0\u589e\u4e00\u4e2a\u3002",
                                         style = MaterialTheme.typography.bodyMedium,
@@ -1044,8 +1030,7 @@ fun RentScreen(
                                     )
                                 )
                                 selectedFloorNumber = null
-                                expandedRoomNumber = null
-                                expandedRoomBounds = null
+                                roomDialogTarget = null
                                 showFloorDrawer = false
                                 showMeterEntryPage = false
                                 showApartmentOverviewPage = false
@@ -1404,8 +1389,8 @@ fun RentScreen(
                                 selectedApartment?.name?.let { apartmentName ->
                                     selectedFloorNumber?.let { floorNumber ->
                                         onDeleteRoom(apartmentName, floorNumber, room.roomNumber)
-                                        if (expandedRoomNumber == room.roomNumber) {
-                                            expandedRoomNumber = null
+                                        if (roomDialogTarget?.floorNumber == floorNumber && roomDialogTarget?.roomNumber == room.roomNumber) {
+                                            roomDialogTarget = null
                                         }
                                     }
                                 }
@@ -1420,6 +1405,50 @@ fun RentScreen(
             },
             dismissButton = {}
         )
+    }
+
+    dialogRoom?.let { room ->
+        val dialogFloorNumber = roomDialogTarget?.floorNumber
+        if (selectedApartment != null && dialogFloorNumber != null) {
+            RoomDetailDialog(
+                room = room,
+                monthValue = room.valuesForMonth(currentMonth),
+                placeholderValue = room.valuesForMonth(currentMonth.minusMonths(1)),
+                onDismiss = { roomDialogTarget = null },
+                onRoomLongPress = {
+                    roomDialogTarget = null
+                    roomPendingAction = room
+                },
+                onRentChange = { rent ->
+                    onUpdateRoom(
+                        selectedApartment.name,
+                        dialogFloorNumber,
+                        room.updateValuesForMonth(currentMonth) { it.copy(rent = rent) }
+                    )
+                },
+                onWaterMeterChange = { meter ->
+                    onUpdateRoom(
+                        selectedApartment.name,
+                        dialogFloorNumber,
+                        room.updateValuesForMonth(currentMonth) { it.copy(waterMeter = meter) }
+                    )
+                },
+                onElectricMeterChange = { meter ->
+                    onUpdateRoom(
+                        selectedApartment.name,
+                        dialogFloorNumber,
+                        room.updateValuesForMonth(currentMonth) { it.copy(electricMeter = meter) }
+                    )
+                },
+                onSettleCurrentMonth = {
+                    roomDialogTarget = null
+                    roomPendingSettlement = PendingSettlement(
+                        floorNumber = dialogFloorNumber,
+                        room = room
+                    )
+                }
+            )
+        }
     }
 
     roomPendingSettlement?.let { pendingSettlement ->
@@ -1648,7 +1677,10 @@ fun RentScreen(
                                             floorRooms = selectedFloorRooms
                                         )
                                         onAddRoom(apartmentName, floorNumber)
-                                        expandedRoomNumber = nextRoomNumber
+                                        roomDialogTarget = RoomDialogTarget(
+                                            floorNumber = floorNumber,
+                                            roomNumber = nextRoomNumber
+                                        )
                                     }
                                 }
                                 roomPendingAdd = false
@@ -1750,6 +1782,197 @@ private fun ApartmentStatusNavItem(
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RoomGridCard(
+    room: RoomUiState,
+    status: RoomCardStatus,
+    onCardClick: () -> Unit,
+    onCardLongPress: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(92.dp)
+            .combinedClickable(
+                onClick = onCardClick,
+                onLongClick = onCardLongPress
+            ),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.16f)
+        ),
+        colors = CardDefaults.cardColors(containerColor = roomCardColor(status)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = room.roomNumber.toString(),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RoomDetailDialog(
+    room: RoomUiState,
+    monthValue: RoomMonthlyValue,
+    placeholderValue: RoomMonthlyValue,
+    onDismiss: () -> Unit,
+    onRoomLongPress: () -> Unit,
+    onRentChange: (String) -> Unit,
+    onWaterMeterChange: (String) -> Unit,
+    onElectricMeterChange: (String) -> Unit,
+    onSettleCurrentMonth: () -> Unit
+) {
+    val currentStatus = room.statusForMonth(YearMonth.now())
+    var rentDraft by remember(room.roomNumber, monthValue.rent) { mutableStateOf(monthValue.rent) }
+    var waterMeterDraft by remember(room.roomNumber, monthValue.waterMeter) { mutableStateOf(monthValue.waterMeter) }
+    var electricMeterDraft by remember(room.roomNumber, monthValue.electricMeter) { mutableStateOf(monthValue.electricMeter) }
+    val waterMeterInvalid = isMeterLowerThanPrevious(waterMeterDraft, placeholderValue.waterMeter)
+    val electricMeterInvalid = isMeterLowerThanPrevious(electricMeterDraft, placeholderValue.electricMeter)
+
+    LaunchedEffect(monthValue.rent) {
+        if (rentDraft != monthValue.rent) {
+            rentDraft = monthValue.rent
+        }
+    }
+    LaunchedEffect(monthValue.waterMeter) {
+        if (waterMeterDraft != monthValue.waterMeter) {
+            waterMeterDraft = monthValue.waterMeter
+        }
+    }
+    LaunchedEffect(monthValue.electricMeter) {
+        if (electricMeterDraft != monthValue.electricMeter) {
+            electricMeterDraft = monthValue.electricMeter
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onDismiss() }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {}
+                        )
+                    },
+                colors = CardDefaults.cardColors(containerColor = roomCardColor(currentStatus)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .width(118.dp)
+                                .height(118.dp)
+                                .combinedClickable(
+                                    onClick = {},
+                                    onLongClick = onRoomLongPress
+                                ),
+                            shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = room.roomNumber.toString(),
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            RoomValueRow(
+                                label = "房租",
+                                value = rentDraft,
+                                placeholder = placeholderValue.rent,
+                                displayFallbackAsValue = true,
+                                onValueChange = {
+                                    rentDraft = it
+                                    onRentChange(it)
+                                }
+                            )
+                            RoomValueRow(
+                                label = "水表",
+                                value = waterMeterDraft,
+                                placeholder = placeholderValue.waterMeter,
+                                isError = waterMeterInvalid,
+                                onValueChange = {
+                                    waterMeterDraft = it
+                                    onWaterMeterChange(it)
+                                }
+                            )
+                            RoomValueRow(
+                                label = "电表",
+                                value = electricMeterDraft,
+                                placeholder = placeholderValue.electricMeter,
+                                isError = electricMeterInvalid,
+                                onValueChange = {
+                                    electricMeterDraft = it
+                                    onElectricMeterChange(it)
+                                }
+                            )
+                        }
+                    }
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Button(
+                            onClick = onSettleCurrentMonth,
+                            modifier = Modifier.width(220.dp)
+                        ) {
+                            Text(text = "结算本月")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1920,6 +2143,11 @@ private data class PendingSettlement(
     val room: RoomUiState
 )
 
+private data class RoomDialogTarget(
+    val floorNumber: Int,
+    val roomNumber: Int
+)
+
 private data class CollectionRoomTarget(
     val floorNumber: Int,
     val room: RoomUiState
@@ -1946,61 +2174,72 @@ private fun CollectionSummaryTopCard(
 ) {
     Card(
         modifier = modifier,
+        shape = RoundedCornerShape(28.dp),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+        ),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(18.dp),
+                .padding(horizontal = 14.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.Center
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(
+                SummaryMetricCard(
                     modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "\u5e94\u6536",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = receivable,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Column(
+                    label = "\u5e94\u6536",
+                    value = receivable
+                )
+                SummaryMetricCard(
                     modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "\u5df2\u6536",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = received,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                    label = "\u5df2\u6536",
+                    value = received
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun SummaryMetricCard(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
