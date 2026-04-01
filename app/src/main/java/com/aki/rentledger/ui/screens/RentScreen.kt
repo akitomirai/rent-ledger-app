@@ -1,9 +1,19 @@
 ﻿package com.aki.rentledger.ui.screens
 
+import android.content.ContentValues
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.view.View
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -21,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,29 +70,33 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.aki.rentledger.ApartmentUiState
+import com.aki.rentledger.displayValuesForMonth
 import com.aki.rentledger.PersistedAppState
 import com.aki.rentledger.RentLedgerXlsxTransfer
+import com.aki.rentledger.referenceValuesBeforeMonth
 import com.aki.rentledger.RoomMonthlyValue
 import com.aki.rentledger.RoomCardStatus
 import com.aki.rentledger.RoomUiState
@@ -96,6 +111,7 @@ import java.time.YearMonth
 import java.util.Locale
 import androidx.compose.foundation.text.KeyboardOptions
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 private const val HISTORY_EDIT_WINDOW_MILLIS = 5 * 60 * 1000L
 
@@ -119,7 +135,20 @@ fun RentScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val focusManager = LocalFocusManager.current
+    val isCompactPhoneWidth = rememberIsCompactPhoneWidth()
+    val pageHorizontalPadding = if (isCompactPhoneWidth) 12.dp else 16.dp
+    val pageVerticalPadding = if (isCompactPhoneWidth) 16.dp else 20.dp
+    val topCardSpacing = if (isCompactPhoneWidth) 8.dp else 12.dp
+    val topCardHeight = if (isCompactPhoneWidth) 124.dp else 136.dp
+    val roomGridPadding = if (isCompactPhoneWidth) 14.dp else 20.dp
+    val roomGridSpacing = if (isCompactPhoneWidth) 10.dp else 14.dp
+    val floorDrawerGestureWidth = if (isCompactPhoneWidth) 26.dp else 30.dp
+    val floorDrawerHandleWidth = if (isCompactPhoneWidth) 24.dp else 28.dp
+    val floorDrawerHandleHeight = if (isCompactPhoneWidth) 88.dp else 96.dp
+    val floorDrawerHandleOffset = if (isCompactPhoneWidth) (-10).dp else (-12).dp
+    val floorDrawerWidth = if (isCompactPhoneWidth) 102.dp else 114.dp
+    val floorDrawerHeight = if (isCompactPhoneWidth) 388.dp else 420.dp
+    val floorDrawerHiddenOffset = -(floorDrawerWidth + if (isCompactPhoneWidth) 12.dp else 18.dp)
     var showApartmentSheet by rememberSaveable { mutableStateOf(false) }
     var newApartmentName by rememberSaveable { mutableStateOf("") }
     var selectedFloorNumber by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -129,6 +158,8 @@ fun RentScreen(
     var roomPendingAction by remember { mutableStateOf<RoomUiState?>(null) }
     var roomPendingDelete by remember { mutableStateOf<RoomUiState?>(null) }
     var roomPendingSettlement by remember { mutableStateOf<PendingSettlement?>(null) }
+    var settlementDialogBounds by remember { mutableStateOf<Rect?>(null) }
+    var settlementDialogView by remember { mutableStateOf<View?>(null) }
     var roomPendingAdd by remember { mutableStateOf(false) }
     var waterFeeInput by rememberSaveable { mutableStateOf("") }
     var electricFeeInput by rememberSaveable { mutableStateOf("") }
@@ -137,15 +168,23 @@ fun RentScreen(
     var apartmentTransferTarget by remember { mutableStateOf<ApartmentUiState?>(null) }
     var apartmentPendingClear by remember { mutableStateOf<ApartmentUiState?>(null) }
     var apartmentClearConfirmInput by rememberSaveable { mutableStateOf("") }
+    var apartmentPendingDelete by remember { mutableStateOf<ApartmentUiState?>(null) }
+    var apartmentDeleteConfirmInput by rememberSaveable { mutableStateOf("") }
     var showFloorDrawer by rememberSaveable { mutableStateOf(false) }
     var showMeterEntryPage by rememberSaveable { mutableStateOf(false) }
     var showApartmentOverviewPage by rememberSaveable { mutableStateOf(false) }
     var showCollectionStatusPage by rememberSaveable { mutableStateOf(false) }
-    var floorDrawerBounds by remember { mutableStateOf<Rect?>(null) }
-    var screenPositionInRoot by remember { mutableStateOf(Offset.Zero) }
+    val floorDrawerOffset by animateDpAsState(
+        targetValue = if (showFloorDrawer) 0.dp else floorDrawerHiddenOffset,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "floorDrawerOffset"
+    )
 
     val selectedApartment = apartments.firstOrNull { it.name == selectedApartmentName }
-    val showTopCardHints = selectedApartmentName == SAMPLE_APARTMENT_NAME
+    val showTopCardHints = selectedApartmentName == SAMPLE_APARTMENT_NAME && !isCompactPhoneWidth
     val floorNumbers = selectedApartment?.floors.orEmpty()
     val selectedFloorRooms = selectedFloorNumber?.let { floor ->
         selectedApartment?.roomsByFloor?.get(floor).orEmpty()
@@ -283,15 +322,16 @@ fun RentScreen(
         showCollectionStatusPage = false
     }
 
-    LaunchedEffect(showFloorDrawer) {
-        if (!showFloorDrawer) {
-            floorDrawerBounds = null
-        }
-    }
-
     LaunchedEffect(apartmentPendingEdit?.name) {
         apartmentNameInput = apartmentPendingEdit?.name.orEmpty()
         apartmentNameEditing = false
+    }
+
+    LaunchedEffect(roomPendingSettlement) {
+        if (roomPendingSettlement == null) {
+            settlementDialogBounds = null
+            settlementDialogView = null
+        }
     }
 
     if (showMeterEntryPage) {
@@ -325,35 +365,22 @@ fun RentScreen(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .onGloballyPositioned { coordinates ->
-                screenPositionInRoot = coordinates.positionInRoot()
-            }
-            .pointerInput(showFloorDrawer, floorDrawerBounds, screenPositionInRoot) {
-                detectTapGestures { tapOffset ->
-                    focusManager.clearFocus(force = true)
-                    val tapPositionInRoot = screenPositionInRoot + tapOffset
-                    val currentDrawerBounds = floorDrawerBounds
-                    if (showFloorDrawer && (currentDrawerBounds == null || !currentDrawerBounds.contains(tapPositionInRoot))) {
-                        showFloorDrawer = false
-                    }
-                }
-            }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .then(if (roomPendingSettlement != null) Modifier.blur(12.dp) else Modifier)
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .padding(horizontal = pageHorizontalPadding, vertical = pageVerticalPadding)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(topCardSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CollectionSummaryTopCard(
                     modifier = Modifier
                         .weight(0.95f)
-                        .height(136.dp)
+                        .height(topCardHeight)
                         .combinedClickable(
                             onClick = {
                                 showFloorDrawer = false
@@ -365,13 +392,14 @@ fun RentScreen(
                             }
                         ),
                     receivable = formatMoneyTruncated(totalReceivable),
-                    received = formatMoneyTruncated(totalReceived)
+                    received = formatMoneyTruncated(totalReceived),
+                    compactLayout = isCompactPhoneWidth
                 )
 
                 Card(
                     modifier = Modifier
                         .weight(1.45f)
-                        .height(136.dp)
+                        .height(topCardHeight)
                         .combinedClickable(
                             onClick = {
                                 showFloorDrawer = false
@@ -435,7 +463,7 @@ fun RentScreen(
                 Card(
                     modifier = Modifier
                         .weight(0.95f)
-                        .height(136.dp)
+                        .height(topCardHeight)
                         .combinedClickable(
                             onClick = {
                                 showFloorDrawer = false
@@ -518,20 +546,7 @@ fun RentScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(selectedApartmentName, floorNumbers, showFloorDrawer) {
-                        detectHorizontalDragGestures { change, dragAmount ->
-                            when {
-                                !showFloorDrawer && dragAmount > 18f && change.position.x < 80f -> {
-                                    showFloorDrawer = true
-                                }
-                                showFloorDrawer && dragAmount < -18f -> {
-                                    showFloorDrawer = false
-                                }
-                            }
-                        }
-                    }
+                modifier = Modifier.fillMaxSize()
             ) {
                 Card(
                     modifier = Modifier.fillMaxSize(),
@@ -548,16 +563,16 @@ fun RentScreen(
                             apartment = selectedApartment,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(20.dp)
+                                .padding(roomGridPadding)
                         )
                     } else {
                         LazyVerticalGrid(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(20.dp),
+                                .padding(roomGridPadding),
                             columns = GridCells.Fixed(3),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                            horizontalArrangement = Arrangement.spacedBy(roomGridSpacing),
+                            verticalArrangement = Arrangement.spacedBy(roomGridSpacing)
                         ) {
                             if (selectedApartment != null && selectedFloorNumber != null && selectedFloorRooms.isNotEmpty()) {
                                 val currentFloorNumber = selectedFloorNumber!!
@@ -606,29 +621,37 @@ fun RentScreen(
                     }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(18.dp)
-                        .align(Alignment.CenterStart)
-                        .zIndex(1f)
-                        .pointerInput(Unit) {
-                            detectHorizontalDragGestures { _, dragAmount ->
-                                if (dragAmount > 6f) {
-                                    showFloorDrawer = true
+                if (!showFloorDrawer) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(floorDrawerGestureWidth)
+                            .align(Alignment.CenterStart)
+                            .zIndex(1f)
+                            .pointerInput(floorDrawerGestureWidth) {
+                                detectHorizontalDragGestures { change, dragAmount ->
+                                    if (change.position.x <= floorDrawerGestureWidth.toPx() && dragAmount > 12f) {
+                                        showFloorDrawer = true
+                                    }
                                 }
                             }
-                        }
-                        .combinedClickable(
-                            onClick = { showFloorDrawer = true },
-                            onLongClick = { showFloorDrawer = true }
-                        )
-                )
+                    )
+                    DrawerEdgeHandle(
+                        modifier = Modifier
+                            .width(floorDrawerHandleWidth)
+                            .height(floorDrawerHandleHeight)
+                            .align(Alignment.CenterStart)
+                            .offset(x = floorDrawerHandleOffset)
+                            .zIndex(2.2f),
+                        onOpen = { showFloorDrawer = true }
+                    )
+                }
 
                 if (showFloorDrawer) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.08f))
                             .zIndex(1.5f)
                             .pointerInput(Unit) {
                                 detectTapGestures {
@@ -638,87 +661,80 @@ fun RentScreen(
                     )
                 }
 
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = showFloorDrawer,
+                Surface(
                     modifier = Modifier
+                        .width(floorDrawerWidth)
+                        .height(floorDrawerHeight)
                         .align(Alignment.CenterStart)
+                        .offset(x = floorDrawerOffset)
                         .zIndex(2f)
-                ) {
-                    Surface(
-                        modifier = Modifier
-                            .width(114.dp)
-                            .height(420.dp)
-                            .onGloballyPositioned { coordinates ->
-                                floorDrawerBounds = coordinates.boundsInRoot()
-                            },
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
-                        tonalElevation = 4.dp,
-                        shadowElevation = 3.dp
-                    ) {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(vertical = 12.dp, horizontal = 8.dp)
-                                .pointerInput(Unit) {
-                                    detectHorizontalDragGestures { _, dragAmount ->
-                                        if (dragAmount < -8f) {
-                                            showFloorDrawer = false
-                                        }
-                                    }
-                                }
-                        ) {
-                            if (selectedApartment != null) {
-                                item {
-                                    FloorNavItem(
-                                        label = "\u60c5\u51b5\u9875",
-                                        selected = showApartmentOverviewPage,
-                                        onClick = {
-                                            showFloorDrawer = false
-                                            showApartmentOverviewPage = true
-                                        },
-                                        onLongClick = {
-                                            showFloorDrawer = false
-                                            showApartmentOverviewPage = true
-                                        }
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
+                        .pointerInput(showFloorDrawer) {
+                            detectHorizontalDragGestures { _, dragAmount ->
+                                if (showFloorDrawer && dragAmount < -12f) {
+                                    showFloorDrawer = false
                                 }
                             }
-                            items(floorNumbers, key = { it }) { floorNumber ->
+                        },
+                    shape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+                    tonalElevation = 4.dp,
+                    shadowElevation = 3.dp
+                ) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(vertical = 12.dp, horizontal = 8.dp)
+                    ) {
+                        if (selectedApartment != null) {
+                            item {
                                 FloorNavItem(
-                                    label = floorLabel(floorNumber),
-                                    selected = !showApartmentOverviewPage && selectedFloorNumber == floorNumber,
+                                    label = "\u60c5\u51b5\u9875",
+                                    selected = showApartmentOverviewPage,
                                     onClick = {
-                                        selectedFloorNumber = floorNumber
-                                        showApartmentOverviewPage = false
                                         showFloorDrawer = false
+                                        showApartmentOverviewPage = true
                                     },
-                                    onLongClick = { floorPendingDelete = floorNumber }
+                                    onLongClick = {
+                                        showFloorDrawer = false
+                                        showApartmentOverviewPage = true
+                                    }
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                             }
-                            item {
-                                if (selectedApartment == null) {
-                                    Text(
-                                        text = "\u5148\u9009\u516c\u5bd3",
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 14.dp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                } else {
-                                    Button(
-                                        onClick = {
-                                            val nextFloorNumber = floorNumbers.maxOrNull()?.plus(1) ?: 2
-                                            selectedFloorNumber = nextFloorNumber
-                                            showFloorDrawer = false
-                                            onAddFloor(selectedApartment.name)
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(text = "\u65b0\u589e\u697c\u5c42")
-                                    }
+                        }
+                        items(floorNumbers, key = { it }) { floorNumber ->
+                            FloorNavItem(
+                                label = floorLabel(floorNumber),
+                                selected = !showApartmentOverviewPage && selectedFloorNumber == floorNumber,
+                                onClick = {
+                                    selectedFloorNumber = floorNumber
+                                    showApartmentOverviewPage = false
+                                    showFloorDrawer = false
+                                },
+                                onLongClick = { floorPendingDelete = floorNumber }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        item {
+                            if (selectedApartment == null) {
+                                Text(
+                                    text = "\u5148\u9009\u516c\u5bd3",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 14.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Button(
+                                    onClick = {
+                                        val nextFloorNumber = floorNumbers.maxOrNull()?.plus(1) ?: 2
+                                        selectedFloorNumber = nextFloorNumber
+                                        showFloorDrawer = false
+                                        onAddFloor(selectedApartment.name)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(text = "\u65b0\u589e\u697c\u5c42")
                                 }
                             }
                         }
@@ -934,6 +950,25 @@ fun RentScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
+                Button(
+                    onClick = {
+                        apartmentDeleteConfirmInput = ""
+                        apartmentPendingDelete = targetApartment
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text(text = "删除这个公寓")
+                }
+                Text(
+                    text = "会删除这个公寓本身及它的全部水价、电价、楼层、房间、状态和月份账单数据。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
@@ -942,7 +977,7 @@ fun RentScreen(
     apartmentPendingClear?.let { apartment ->
         val canConfirmClear = apartmentClearConfirmInput.trim() == apartment.name
         AlertDialog(
-            modifier = Modifier.width(360.dp),
+            modifier = Modifier.width(adaptiveDialogWidth(360.dp)),
             onDismissRequest = {
                 apartmentPendingClear = null
                 apartmentClearConfirmInput = ""
@@ -1060,9 +1095,127 @@ fun RentScreen(
         )
     }
 
+    apartmentPendingDelete?.let { apartment ->
+        val canConfirmDelete = apartmentDeleteConfirmInput.trim() == apartment.name
+        AlertDialog(
+            modifier = Modifier.width(adaptiveDialogWidth(360.dp)),
+            onDismissRequest = {
+                apartmentPendingDelete = null
+                apartmentDeleteConfirmInput = ""
+            },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            title = {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        modifier = Modifier.width(220.dp),
+                        text = "确认删除公寓",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        modifier = Modifier.width(240.dp),
+                        text = "此操作会删除“${apartment.name}”这个公寓，以及它的全部楼层、房间、状态和月份账单数据。",
+                        style = MaterialTheme.typography.bodyLarge,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        modifier = Modifier.width(240.dp),
+                        text = "请输入公寓名称确认：${apartment.name}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    OutlinedTextField(
+                        modifier = Modifier.width(220.dp),
+                        value = apartmentDeleteConfirmInput,
+                        onValueChange = { apartmentDeleteConfirmInput = it },
+                        singleLine = true,
+                        label = { Text(text = "输入公寓名称") }
+                    )
+                }
+            },
+            confirmButton = {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        modifier = Modifier.width(220.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                apartmentPendingDelete = null
+                                apartmentDeleteConfirmInput = ""
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "取消")
+                        }
+                        Button(
+                            onClick = {
+                                val remainingApartments = apartments.filterNot { it.name == apartment.name }
+                                val nextSelectedApartmentName = if (selectedApartmentName == apartment.name) {
+                                    remainingApartments.firstOrNull()?.name
+                                } else {
+                                    selectedApartmentName
+                                }
+                                onReplaceAppState(
+                                    PersistedAppState(
+                                        apartments = remainingApartments,
+                                        selectedApartmentName = nextSelectedApartmentName
+                                    )
+                                )
+                                selectedFloorNumber = null
+                                roomDialogTarget = null
+                                showFloorDrawer = false
+                                showMeterEntryPage = false
+                                showApartmentOverviewPage = false
+                                showCollectionStatusPage = false
+                                apartmentPendingEdit = null
+                                apartmentTransferTarget = null
+                                apartmentPendingClear = null
+                                apartmentClearConfirmInput = ""
+                                apartmentPendingDelete = null
+                                apartmentDeleteConfirmInput = ""
+                                Toast.makeText(
+                                    context,
+                                    "已删除公寓 ${apartment.name}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            enabled = canConfirmDelete,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            )
+                        ) {
+                            Text(text = "确认删除")
+                        }
+                    }
+                }
+            },
+            dismissButton = {}
+        )
+    }
+
     apartmentPendingEdit?.let { apartment ->
         AlertDialog(
-            modifier = Modifier.width(360.dp),
+            modifier = Modifier.width(adaptiveDialogWidth(360.dp)),
             onDismissRequest = {
                 apartmentPendingEdit = null
                 apartmentNameEditing = false
@@ -1200,7 +1353,7 @@ fun RentScreen(
 
     floorPendingDelete?.let { floorNumber ->
         AlertDialog(
-            modifier = Modifier.width(320.dp),
+            modifier = Modifier.width(adaptiveDialogWidth(320.dp)),
             onDismissRequest = { floorPendingDelete = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             title = {
@@ -1338,7 +1491,7 @@ fun RentScreen(
 
     roomPendingDelete?.let { room ->
         AlertDialog(
-            modifier = Modifier.width(320.dp),
+            modifier = Modifier.width(adaptiveDialogWidth(320.dp)),
             onDismissRequest = { roomPendingDelete = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             title = {
@@ -1413,7 +1566,7 @@ fun RentScreen(
             RoomDetailDialog(
                 room = room,
                 monthValue = room.valuesForMonth(currentMonth),
-                placeholderValue = room.valuesForMonth(currentMonth.minusMonths(1)),
+                placeholderValue = room.referenceValuesBeforeMonth(currentMonth),
                 onDismiss = { roomDialogTarget = null },
                 onRoomLongPress = {
                     roomDialogTarget = null
@@ -1455,7 +1608,7 @@ fun RentScreen(
         val settlementRoom = pendingSettlement.room
         val rawCurrentMonthValue = settlementRoom.valuesForMonth(currentMonth)
         val currentMonthValue = settlementRoom.effectiveValuesForMonth(currentMonth)
-        val previousMonthValue = settlementRoom.valuesForMonth(currentMonth.minusMonths(1))
+        val previousMonthValue = settlementRoom.referenceValuesBeforeMonth(currentMonth)
         val rentAmount = currentMonthValue.rent.toDoubleOrNull() ?: 0.0
         val waterUnitPrice = selectedApartment?.waterFee?.toDoubleOrNull() ?: 0.0
         val electricUnitPrice = selectedApartment?.electricFee?.toDoubleOrNull() ?: 0.0
@@ -1469,9 +1622,12 @@ fun RentScreen(
         val missingWaterMeter = rawCurrentMonthValue.waterMeter.isBlank()
         val missingElectricMeter = rawCurrentMonthValue.electricMeter.isBlank()
         val hasIncompleteFields = missingRent || missingWaterMeter || missingElectricMeter
+        val invalidPreviousWaterMeter = previousWaterMeter <= 0.0
+        val invalidPreviousElectricMeter = previousElectricMeter <= 0.0
+        val hasInvalidPreviousMeters = invalidPreviousWaterMeter || invalidPreviousElectricMeter
         val invalidWaterUsage = waterUsage < 0.0
         val invalidElectricUsage = electricUsage < 0.0
-        val hasInvalidUsage = invalidWaterUsage || invalidElectricUsage
+        val hasInvalidUsage = invalidWaterUsage || invalidElectricUsage || hasInvalidPreviousMeters
         val waterCharge = waterUsage * waterUnitPrice
         val electricCharge = electricUsage * electricUnitPrice
         val totalCharge = rentAmount + waterCharge + electricCharge
@@ -1485,21 +1641,39 @@ fun RentScreen(
                 }
                 append(missingLabels.joinToString("、"))
             }
+            if (hasInvalidPreviousMeters) {
+                if (isNotEmpty()) append("\n")
+                append("检测到")
+                val invalidPreviousLabels = buildList {
+                    if (invalidPreviousWaterMeter) add("上月水表")
+                    if (invalidPreviousElectricMeter) add("上月电表")
+                }
+                append(invalidPreviousLabels.joinToString("、"))
+                append("数据不符常理，请进行数据核查。")
+            }
             if (invalidWaterUsage) {
                 if (isNotEmpty()) append("\n")
-                append("\u68c0\u6d4b\u5230\u6c34\u8868\u5dee\u503c\u4e3a\u8d1f\u6570\uff0c\u8bf7\u68c0\u67e5\u672c\u6708\u548c\u4e0a\u4e2a\u6708\u6c34\u8868\u6570\u636e\u3002")
+                append("检测到水表数据不符常理，请进行数据核查。")
             }
             if (invalidElectricUsage) {
                 if (isNotEmpty()) append("\n")
-                append("\u68c0\u6d4b\u5230\u7535\u8868\u5dee\u503c\u4e3a\u8d1f\u6570\uff0c\u8bf7\u68c0\u67e5\u672c\u6708\u548c\u4e0a\u4e2a\u6708\u7535\u8868\u6570\u636e\u3002")
+                append("检测到电表数据不符常理，请进行数据核查。")
             }
         }
 
         AlertDialog(
-            modifier = Modifier.width(460.dp),
+            modifier = Modifier
+                .width(adaptiveDialogWidth(460.dp, widthFraction = 0.94f))
+                .onGloballyPositioned { coordinates ->
+                    settlementDialogBounds = coordinates.boundsInWindow()
+                },
             onDismissRequest = { roomPendingSettlement = null },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             title = {
+                val dialogView = LocalView.current
+                LaunchedEffect(dialogView) {
+                    settlementDialogView = dialogView
+                }
                 Box(
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center
@@ -1560,7 +1734,8 @@ fun RentScreen(
                         label = "\u5408\u8ba1",
                         value = when {
                             hasIncompleteFields -> "请先填写完整房租和水电数据"
-                            hasInvalidUsage -> "\u8bf7\u5148\u4fee\u6b63\u6c34\u7535\u6570\u636e"
+                            hasInvalidPreviousMeters -> "请核查上月水电表数据"
+                            hasInvalidUsage -> "请核查水电表数据"
                             else -> formatMoneyTruncated(totalCharge)
                         },
                         remark = "\u5e94\u6536\u5408\u8ba1",
@@ -1586,6 +1761,15 @@ fun RentScreen(
                         }
                         Button(
                             onClick = {
+                                val saveResult = saveSettlementDialogImageToAlbum(
+                                    context = context,
+                                    sourceView = settlementDialogView,
+                                    bounds = settlementDialogBounds,
+                                    fileName = buildSettlementImageFileName(
+                                        roomNumber = settlementRoom.roomNumber,
+                                        month = currentMonth
+                                    )
+                                )
                                 selectedApartment?.name?.let { apartmentName ->
                                     onUpdateRoomStatus(
                                         apartmentName,
@@ -1596,6 +1780,21 @@ fun RentScreen(
                                     )
                                 }
                                 roomPendingSettlement = null
+                                settlementDialogBounds = null
+                                settlementDialogView = null
+                                saveResult.onSuccess { displayName ->
+                                    Toast.makeText(
+                                        context,
+                                        "已保存结算图片到相册：$displayName",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }.onFailure { throwable ->
+                                    Toast.makeText(
+                                        context,
+                                        buildTransferFailureMessage("图片保存失败", throwable, "请重试"),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             },
                             modifier = Modifier.weight(1f),
                             enabled = !hasIncompleteFields && !hasInvalidUsage
@@ -1611,7 +1810,7 @@ fun RentScreen(
 
     if (roomPendingAdd) {
         AlertDialog(
-            modifier = Modifier.width(320.dp),
+            modifier = Modifier.width(adaptiveDialogWidth(320.dp)),
             onDismissRequest = { roomPendingAdd = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             title = {
@@ -1694,6 +1893,48 @@ fun RentScreen(
             },
             dismissButton = {}
         )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DrawerEdgeHandle(
+    modifier: Modifier = Modifier,
+    onOpen: () -> Unit
+) {
+    Surface(
+        modifier = modifier.combinedClickable(
+            onClick = onOpen,
+            onLongClick = onOpen
+        ),
+        shape = RoundedCornerShape(topEnd = 18.dp, bottomEnd = 18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f),
+        tonalElevation = 4.dp,
+        shadowElevation = 3.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 10.dp, horizontal = 4.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(22.dp)
+                    .clip(MaterialTheme.shapes.small)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = "楼\n层",
+                style = MaterialTheme.typography.labelMedium.copy(lineHeight = 16.sp),
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -1866,7 +2107,7 @@ private fun RoomDetailDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            dismissOnClickOutside = false
+            dismissOnClickOutside = true
         )
     ) {
         Box(
@@ -1932,7 +2173,6 @@ private fun RoomDetailDialog(
                                 label = "房租",
                                 value = rentDraft,
                                 placeholder = placeholderValue.rent,
-                                displayFallbackAsValue = true,
                                 onValueChange = {
                                     rentDraft = it
                                     onRentChange(it)
@@ -1977,167 +2217,6 @@ private fun RoomDetailDialog(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun RoomCard(
-    room: RoomUiState,
-    monthValue: RoomMonthlyValue,
-    placeholderValue: RoomMonthlyValue,
-    expanded: Boolean,
-    onExpandedBoundsChanged: (Rect) -> Unit,
-    onCardClick: () -> Unit,
-    onCardLongPress: () -> Unit,
-    onRentChange: (String) -> Unit,
-    onWaterMeterChange: (String) -> Unit,
-    onElectricMeterChange: (String) -> Unit,
-    onSettleCurrentMonth: () -> Unit
-) {
-    val currentStatus = room.statusForMonth(YearMonth.now())
-    var rentDraft by remember(room.roomNumber, monthValue.rent) { mutableStateOf(monthValue.rent) }
-    var waterMeterDraft by remember(room.roomNumber, monthValue.waterMeter) { mutableStateOf(monthValue.waterMeter) }
-    var electricMeterDraft by remember(room.roomNumber, monthValue.electricMeter) { mutableStateOf(monthValue.electricMeter) }
-    val waterMeterInvalid = isMeterLowerThanPrevious(waterMeterDraft, placeholderValue.waterMeter)
-    val electricMeterInvalid = isMeterLowerThanPrevious(electricMeterDraft, placeholderValue.electricMeter)
-
-    LaunchedEffect(monthValue.rent) {
-        if (rentDraft != monthValue.rent) {
-            rentDraft = monthValue.rent
-        }
-    }
-    LaunchedEffect(monthValue.waterMeter) {
-        if (waterMeterDraft != monthValue.waterMeter) {
-            waterMeterDraft = monthValue.waterMeter
-        }
-    }
-    LaunchedEffect(monthValue.electricMeter) {
-        if (electricMeterDraft != monthValue.electricMeter) {
-            electricMeterDraft = monthValue.electricMeter
-        }
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth(if (expanded) 1f else 0.85f)
-            .onGloballyPositioned { coordinates ->
-                if (expanded) {
-                    onExpandedBoundsChanged(coordinates.boundsInRoot())
-                }
-            },
-        colors = CardDefaults.cardColors(containerColor = roomCardColor(currentStatus)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            if (!expanded) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = onCardClick,
-                            onLongClick = onCardLongPress
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = room.roomNumber.toString(),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .width(118.dp)
-                                .height(118.dp)
-                                .combinedClickable(
-                                    onClick = onCardClick,
-                                    onLongClick = onCardLongPress
-                                ),
-                            shape = MaterialTheme.shapes.large,
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = room.roomNumber.toString(),
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            RoomValueRow(
-                                label = "\u623f\u79df",
-                                value = rentDraft,
-                                placeholder = placeholderValue.rent,
-                                displayFallbackAsValue = true,
-                                onValueChange = {
-                                    rentDraft = it
-                                    onRentChange(it)
-                                }
-                            )
-                            RoomValueRow(
-                                label = "\u6c34\u8868",
-                                value = waterMeterDraft,
-                                placeholder = placeholderValue.waterMeter,
-                                isError = waterMeterInvalid,
-                                onValueChange = {
-                                    waterMeterDraft = it
-                                    onWaterMeterChange(it)
-                                }
-                            )
-                            RoomValueRow(
-                                label = "\u7535\u8868",
-                                value = electricMeterDraft,
-                                placeholder = placeholderValue.electricMeter,
-                                isError = electricMeterInvalid,
-                                onValueChange = {
-                                    electricMeterDraft = it
-                                    onElectricMeterChange(it)
-                                }
-                            )
-                        }
-                    }
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Button(
-                            onClick = onSettleCurrentMonth,
-                            modifier = Modifier.width(220.dp)
-                        ) {
-                            Text(text = "\u7ed3\u7b97\u672c\u6708")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 private data class PendingSettlement(
     val floorNumber: Int,
     val room: RoomUiState
@@ -2163,6 +2242,7 @@ private enum class ApartmentRoomCategory(val label: String) {
 private enum class CollectionRoomCategory(val label: String) {
     Receivable("\u5e94\u6536"),
     Received("\u5df2\u6536"),
+    Unreceived("\u672a\u6536"),
     Overdue("\u62d6\u6b20")
 }
 
@@ -2170,7 +2250,8 @@ private enum class CollectionRoomCategory(val label: String) {
 private fun CollectionSummaryTopCard(
     modifier: Modifier = Modifier,
     receivable: String,
-    received: String
+    received: String,
+    compactLayout: Boolean = false
 ) {
     Card(
         modifier = modifier,
@@ -2185,62 +2266,86 @@ private fun CollectionSummaryTopCard(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 14.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.Center
+                .padding(
+                    horizontal = if (compactLayout) 8.dp else 12.dp,
+                    vertical = if (compactLayout) 12.dp else 16.dp
+                ),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.Start
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                SummaryMetricCard(
-                    modifier = Modifier.weight(1f),
-                    label = "\u5e94\u6536",
-                    value = receivable
-                )
-                SummaryMetricCard(
-                    modifier = Modifier.weight(1f),
-                    label = "\u5df2\u6536",
-                    value = received
-                )
-            }
+            SummaryMetricRow(
+                label = "\u5e94\u6536",
+                value = receivable,
+                compactLayout = compactLayout
+            )
+            Spacer(modifier = Modifier.height(if (compactLayout) 4.dp else 8.dp))
+            SummaryMetricRow(
+                label = "\u5df2\u6536",
+                value = received,
+                compactLayout = compactLayout
+            )
         }
     }
 }
 
 @Composable
-private fun SummaryMetricCard(
-    modifier: Modifier = Modifier,
+private fun SummaryMetricRow(
     label: String,
-    value: String
+    value: String,
+    compactLayout: Boolean
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(if (compactLayout) 8.dp else 10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+        Text(
+            text = label,
+            modifier = Modifier.width(if (compactLayout) 34.dp else 38.dp),
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = if (compactLayout) 13.sp else 14.sp
+            ),
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Start
+        )
+        SummaryMetricCell(
+            modifier = Modifier.weight(1f),
+            text = value,
+            compactLayout = compactLayout
+        )
+    }
+}
+
+@Composable
+private fun SummaryMetricCell(
+    modifier: Modifier = Modifier,
+    text: String,
+    compactLayout: Boolean
+) {
+    val fontSize = when {
+        compactLayout && text.length >= 7 -> 10.sp
+        compactLayout && text.length >= 6 -> 11.sp
+        compactLayout && text.length >= 5 -> 12.sp
+        compactLayout -> 13.sp
+        text.length >= 8 -> 12.sp
+        text.length >= 6 -> 13.sp
+        else -> 15.sp
+    }
+
+    Box(
+        modifier = modifier.padding(vertical = if (compactLayout) 1.dp else 2.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleSmall.copy(fontSize = fontSize),
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Start,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -2256,6 +2361,16 @@ private fun CollectionStatusPage(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isCompactPhoneWidth = rememberIsCompactPhoneWidth()
+    val pageHorizontalPadding = if (isCompactPhoneWidth) 12.dp else 16.dp
+    val pageVerticalPadding = if (isCompactPhoneWidth) 16.dp else 20.dp
+    val headerSpacing = if (isCompactPhoneWidth) 8.dp else 12.dp
+    val headerButtonHeight = if (isCompactPhoneWidth) 50.dp else 56.dp
+    val monthControlHeight = if (isCompactPhoneWidth) 46.dp else 50.dp
+    val contentPadding = if (isCompactPhoneWidth) 12.dp else 20.dp
+    val categoryRailWidth = if (isCompactPhoneWidth) 88.dp else 104.dp
+    val roomListSpacing = if (isCompactPhoneWidth) 8.dp else 10.dp
+    val roomRowHorizontalPadding = if (isCompactPhoneWidth) 18.dp else 26.dp
     val defaultApartments = remember { listOf(defaultSampleApartment()) }
     var monthOffset by rememberSaveable(apartment?.name) { mutableStateOf(0) }
     var selectedCategory by rememberSaveable(apartment?.name) {
@@ -2347,6 +2462,9 @@ private fun CollectionStatusPage(
         when (selectedCategory) {
             CollectionRoomCategory.Receivable -> countsTowardReceivable(roomStatus)
             CollectionRoomCategory.Received -> roomStatus == RoomCardStatus.Paid
+            CollectionRoomCategory.Unreceived -> {
+                roomStatus == RoomCardStatus.Unfilled || roomStatus == RoomCardStatus.Unpaid
+            }
             CollectionRoomCategory.Overdue -> roomStatus == RoomCardStatus.Overdue
         }
     }
@@ -2367,16 +2485,16 @@ private fun CollectionStatusPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .padding(horizontal = pageHorizontalPadding, vertical = pageVerticalPadding)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(headerSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
                     onClick = onBack,
-                    modifier = Modifier.height(56.dp)
+                    modifier = Modifier.height(headerButtonHeight)
                 ) {
                     Text(text = "\u8fd4\u56de")
                 }
@@ -2384,7 +2502,7 @@ private fun CollectionStatusPage(
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(56.dp),
+                        .height(headerButtonHeight),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 2.dp,
@@ -2405,8 +2523,8 @@ private fun CollectionStatusPage(
 
                 Surface(
                     modifier = Modifier
-                        .height(56.dp)
-                        .width(56.dp),
+                        .height(headerButtonHeight)
+                        .width(headerButtonHeight),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 2.dp,
@@ -2421,17 +2539,17 @@ private fun CollectionStatusPage(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(if (isCompactPhoneWidth) 12.dp else 16.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(headerSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
                     onClick = { if (monthOffset > 0) monthOffset -= 1 },
                     enabled = monthOffset > 0,
-                    modifier = Modifier.height(50.dp)
+                    modifier = Modifier.height(monthControlHeight)
                 ) {
                     Text(text = "\u4e0b\u4e2a\u6708")
                 }
@@ -2439,7 +2557,7 @@ private fun CollectionStatusPage(
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(50.dp),
+                        .height(monthControlHeight),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                     tonalElevation = 1.dp,
@@ -2460,13 +2578,13 @@ private fun CollectionStatusPage(
 
                 Button(
                     onClick = { monthOffset += 1 },
-                    modifier = Modifier.height(50.dp)
+                    modifier = Modifier.height(monthControlHeight)
                 ) {
                     Text(text = "\u4e0a\u4e2a\u6708")
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(if (isCompactPhoneWidth) 12.dp else 16.dp))
 
             Card(
                 modifier = Modifier.fillMaxSize(),
@@ -2488,12 +2606,12 @@ private fun CollectionStatusPage(
                     Row(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(20.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            .padding(contentPadding),
+                        horizontalArrangement = Arrangement.spacedBy(if (isCompactPhoneWidth) 12.dp else 16.dp)
                     ) {
                         Column(
-                            modifier = Modifier.width(104.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.width(categoryRailWidth),
+                            verticalArrangement = Arrangement.spacedBy(if (isCompactPhoneWidth) 8.dp else 10.dp)
                         ) {
                             CollectionRoomCategory.entries.forEach { category ->
                                 ApartmentStatusNavItem(
@@ -2514,8 +2632,8 @@ private fun CollectionStatusPage(
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(18.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    .padding(if (isCompactPhoneWidth) 12.dp else 18.dp),
+                                verticalArrangement = Arrangement.spacedBy(if (isCompactPhoneWidth) 10.dp else 12.dp)
                             ) {
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
@@ -2558,7 +2676,7 @@ private fun CollectionStatusPage(
                                 } else {
                                     LazyColumn(
                                         modifier = Modifier.fillMaxSize(),
-                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        verticalArrangement = Arrangement.spacedBy(roomListSpacing)
                                     ) {
                                         items(filteredTargets, key = { it.room.roomNumber }) { target ->
                                             val roomStatus = target.room.statusForMonth(displayedMonth)
@@ -2581,7 +2699,10 @@ private fun CollectionStatusPage(
                                                 Row(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .padding(horizontal = 26.dp, vertical = 20.dp),
+                                                        .padding(
+                                                            horizontal = roomRowHorizontalPadding,
+                                                            vertical = if (isCompactPhoneWidth) 18.dp else 20.dp
+                                                        ),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
@@ -2730,77 +2851,6 @@ private fun CollectionStatusPage(
         }
     }
 
-}
-
-@Composable
-private fun MeterEntryPage(
-    apartmentName: String?,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 20.dp)
-        ) {
-            OutlinedButton(onClick = onBack) {
-                Text(text = "\u8fd4\u56de")
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        text = "\u516c\u5bd3\u72b6\u6001",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = apartmentName ?: "\u6682\u672a\u9009\u62e9\u516c\u5bd3",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        text = "\u70b9\u51fb\u5de6\u4fa7\u72b6\u6001\u67e5\u770b\u5f53\u524d\u516c\u5bd3\u623f\u95f4\u60c5\u51b5\uff0c\u53ea\u663e\u793a\u623f\u95f4\u53f7\u3002",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Card(
-                modifier = Modifier.fillMaxSize(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "\u6682\u65e0\u623f\u95f4",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-    }
 }
 
 @Composable
@@ -2998,6 +3048,20 @@ private fun HistoryBillPage(
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val isCompactPhoneWidth = rememberIsCompactPhoneWidth()
+    val pageHorizontalPadding = if (isCompactPhoneWidth) 12.dp else 16.dp
+    val pageVerticalPadding = if (isCompactPhoneWidth) 16.dp else 20.dp
+    val headerSpacing = if (isCompactPhoneWidth) 8.dp else 12.dp
+    val headerButtonHeight = if (isCompactPhoneWidth) 50.dp else 56.dp
+    val pageSectionSpacing = if (isCompactPhoneWidth) 12.dp else 16.dp
+    val historyCardPadding = if (isCompactPhoneWidth) 14.dp else 20.dp
+    val historyDrawerGestureWidth = if (isCompactPhoneWidth) 26.dp else 30.dp
+    val historyDrawerHandleWidth = if (isCompactPhoneWidth) 24.dp else 28.dp
+    val historyDrawerHandleHeight = if (isCompactPhoneWidth) 88.dp else 96.dp
+    val historyDrawerHandleOffset = if (isCompactPhoneWidth) (-10).dp else (-12).dp
+    val historyDrawerWidth = if (isCompactPhoneWidth) 102.dp else 114.dp
+    val historyDrawerHeight = if (isCompactPhoneWidth) 388.dp else 420.dp
+    val historyDrawerHiddenOffset = -(historyDrawerWidth + if (isCompactPhoneWidth) 12.dp else 18.dp)
     val defaultApartments = remember { listOf(defaultSampleApartment()) }
     val floorNumbers = apartment?.floors.orEmpty()
     var monthOffset by rememberSaveable(apartment?.name) { mutableStateOf(0) }
@@ -3006,29 +3070,36 @@ private fun HistoryBillPage(
     }
     var showHistoryFloorDrawer by rememberSaveable(apartment?.name) { mutableStateOf(false) }
     var showTransferSheet by rememberSaveable { mutableStateOf(false) }
-    var showHistoryEditConfirm by rememberSaveable { mutableStateOf(false) }
+    var showHistoryEditConfirm by rememberSaveable(apartment?.name) { mutableStateOf(false) }
     var historyEditAccessKey by rememberSaveable(apartment?.name) { mutableStateOf<String?>(null) }
     var historyEditAccessExpiresAt by rememberSaveable(apartment?.name) { mutableStateOf(0L) }
-    var historyEditNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    var historyEditNowMillis by remember(apartment?.name) { mutableStateOf(System.currentTimeMillis()) }
     val displayedMonth = YearMonth.now().minusMonths(monthOffset.toLong())
+    val currentMonth = YearMonth.now()
+    val isPastMonth = displayedMonth.isBefore(currentMonth)
     val currentHistoryEditKey = apartment?.name.orEmpty()
-    val isHistoryEditingEnabled = apartment != null &&
-        historyEditAccessKey == currentHistoryEditKey &&
-        historyEditAccessExpiresAt > historyEditNowMillis
-    val historyEditRemainingMillis = if (isHistoryEditingEnabled) {
-        (historyEditAccessExpiresAt - historyEditNowMillis).coerceAtLeast(0L)
-    } else {
-        0L
-    }
+    val isHistoryEditingEnabled = !isPastMonth || (
+        apartment != null &&
+            historyEditAccessKey == currentHistoryEditKey &&
+            historyEditAccessExpiresAt > historyEditNowMillis
+        )
     val historyRooms = selectedHistoryFloor?.let { floorNumber ->
         apartment?.roomsByFloor?.get(floorNumber).orEmpty()
     }.orEmpty()
     val requestHistoryEditAccess = {
         focusManager.clearFocus(force = true)
-        if (!isHistoryEditingEnabled) {
+        if (isPastMonth && !isHistoryEditingEnabled) {
             showHistoryEditConfirm = true
         }
     }
+    val historyFloorDrawerOffset by animateDpAsState(
+        targetValue = if (showHistoryFloorDrawer) 0.dp else historyDrawerHiddenOffset,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "historyFloorDrawerOffset"
+    )
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -3145,21 +3216,21 @@ private fun HistoryBillPage(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 20.dp)
+                .padding(horizontal = pageHorizontalPadding, vertical = pageVerticalPadding)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(headerSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                OutlinedButton(onClick = onBack, modifier = Modifier.height(56.dp)) {
+                OutlinedButton(onClick = onBack, modifier = Modifier.height(headerButtonHeight)) {
                     Text(text = "\u8fd4\u56de")
                 }
 
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(56.dp),
+                        .height(headerButtonHeight),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 2.dp,
@@ -3180,8 +3251,8 @@ private fun HistoryBillPage(
 
                 Surface(
                     modifier = Modifier
-                        .height(56.dp)
-                        .width(56.dp),
+                        .height(headerButtonHeight)
+                        .width(headerButtonHeight),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     tonalElevation = 2.dp,
@@ -3196,16 +3267,16 @@ private fun HistoryBillPage(
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(pageSectionSpacing))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(headerSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
                     onClick = { if (monthOffset > 0) monthOffset -= 1 },
-                    modifier = Modifier.height(56.dp),
+                    modifier = Modifier.height(headerButtonHeight),
                     enabled = monthOffset > 0
                 ) {
                     Text(text = "\u4e0b\u4e2a\u6708")
@@ -3214,7 +3285,7 @@ private fun HistoryBillPage(
                 Surface(
                     modifier = Modifier
                         .weight(1f)
-                        .height(56.dp),
+                        .height(headerButtonHeight),
                     shape = MaterialTheme.shapes.large,
                     color = Color.Transparent,
                     tonalElevation = 0.dp,
@@ -3234,31 +3305,12 @@ private fun HistoryBillPage(
 
                 Button(
                     onClick = { monthOffset += 1 },
-                    modifier = Modifier.height(56.dp)
+                    modifier = Modifier.height(headerButtonHeight)
                 ) {
                     Text(text = "\u4e0a\u4e2a\u6708")
                 }
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = if (isHistoryEditingEnabled) {
-                    "历史账单修改已开启，剩余 ${formatDurationCountdown(historyEditRemainingMillis)}"
-                } else {
-                    "点击任一历史账单后确认，可获得 5 分钟修改时限"
-                },
-                modifier = Modifier.fillMaxWidth(),
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (isHistoryEditingEnabled) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(pageSectionSpacing))
 
             Card(
                 modifier = Modifier.fillMaxSize(),
@@ -3280,20 +3332,7 @@ private fun HistoryBillPage(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(20.dp)
-                            .pointerInput(apartment.name, floorNumbers, showHistoryFloorDrawer) {
-                                detectHorizontalDragGestures { change, dragAmount ->
-                                    when {
-                                        !showHistoryFloorDrawer && dragAmount > 18f && change.position.x < 80f -> {
-                                            showHistoryFloorDrawer = true
-                                        }
-
-                                        showHistoryFloorDrawer && dragAmount < -18f -> {
-                                            showHistoryFloorDrawer = false
-                                        }
-                                    }
-                                }
-                            }
+                            .padding(historyCardPadding)
                     ) {
                         Column(
                             modifier = Modifier.fillMaxSize(),
@@ -3324,17 +3363,28 @@ private fun HistoryBillPage(
 
                                     else -> {
                                         val historyFloorNumber = selectedHistoryFloor!!
-                                        LazyColumn(
+                                        LazyVerticalGrid(
                                             modifier = Modifier.fillMaxSize(),
-                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                            columns = GridCells.Fixed(2),
+                                            horizontalArrangement = Arrangement.spacedBy(if (isCompactPhoneWidth) 10.dp else 12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(if (isCompactPhoneWidth) 10.dp else 12.dp)
                                         ) {
                                             items(historyRooms, key = { it.roomNumber }) { room ->
-                                                val displayedMonthValue = room.valuesForMonth(displayedMonth)
-                                                val displayedMonthPlaceholder = room
-                                                    .valuesForMonth(displayedMonth.minusMonths(1))
+                                                val displayedMonthValue = if (displayedMonth == currentMonth) {
+                                                    room.valuesForMonth(displayedMonth)
+                                                } else {
+                                                    room.displayValuesForMonth(displayedMonth)
+                                                }
+                                                val displayedMonthReference = room.referenceValuesBeforeMonth(displayedMonth)
+                                                val displayedMonthPlaceholder = if (displayedMonth == currentMonth) {
+                                                    displayedMonthReference
+                                                } else {
+                                                    RoomMonthlyValue()
+                                                }
                                                 HistoryBillRow(
                                                     room = room,
                                                     monthValue = displayedMonthValue,
+                                                    referenceValue = displayedMonthReference,
                                                     placeholderValue = displayedMonthPlaceholder,
                                                     editable = isHistoryEditingEnabled,
                                                     onRequestEditAccess = requestHistoryEditAccess,
@@ -3385,76 +3435,93 @@ private fun HistoryBillPage(
                             }
                         }
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(18.dp)
-                                .align(Alignment.CenterStart)
-                                .zIndex(1f)
-                                .pointerInput(Unit) {
-                                    detectHorizontalDragGestures { _, dragAmount ->
-                                        if (dragAmount > 6f) {
-                                            showHistoryFloorDrawer = true
-                                        }
-                                    }
-                                }
-                                .combinedClickable(
-                                    onClick = { showHistoryFloorDrawer = true },
-                                    onLongClick = { showHistoryFloorDrawer = true }
-                                )
-                        )
-
-                        androidx.compose.animation.AnimatedVisibility(
-                            visible = showHistoryFloorDrawer,
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .zIndex(2f)
-                        ) {
-                            Surface(
+                        if (!showHistoryFloorDrawer) {
+                            Box(
                                 modifier = Modifier
-                                    .width(114.dp)
-                                    .height(420.dp),
-                                shape = MaterialTheme.shapes.large,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
-                                tonalElevation = 4.dp,
-                                shadowElevation = 3.dp
-                            ) {
-                                if (floorNumbers.isEmpty()) {
-                                    Box(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = "\u6682\u65e0\u697c\u5c42",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                } else {
-                                    LazyColumn(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(horizontal = 8.dp, vertical = 12.dp)
-                                            .pointerInput(Unit) {
-                                                detectHorizontalDragGestures { _, dragAmount ->
-                                                    if (dragAmount < -8f) {
-                                                        showHistoryFloorDrawer = false
-                                                    }
-                                                }
-                                            },
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        items(floorNumbers, key = { it }) { floorNumber ->
-                                            FloorNavItem(
-                                                label = floorLabel(floorNumber),
-                                                selected = selectedHistoryFloor == floorNumber,
-                                                onClick = {
-                                                    selectedHistoryFloor = floorNumber
-                                                    showHistoryFloorDrawer = false
-                                                },
-                                                onLongClick = {}
-                                            )
+                                    .fillMaxHeight()
+                                    .width(historyDrawerGestureWidth)
+                                    .align(Alignment.CenterStart)
+                                    .zIndex(1f)
+                                    .pointerInput(historyDrawerGestureWidth) {
+                                        detectHorizontalDragGestures { change, dragAmount ->
+                                            if (change.position.x <= historyDrawerGestureWidth.toPx() && dragAmount > 12f) {
+                                                showHistoryFloorDrawer = true
+                                            }
                                         }
+                                    }
+                            )
+                            DrawerEdgeHandle(
+                                modifier = Modifier
+                                    .width(historyDrawerHandleWidth)
+                                    .height(historyDrawerHandleHeight)
+                                    .align(Alignment.CenterStart)
+                                    .offset(x = historyDrawerHandleOffset)
+                                    .zIndex(2.2f),
+                                onOpen = { showHistoryFloorDrawer = true }
+                            )
+                        }
+
+                        if (showHistoryFloorDrawer) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.08f))
+                                    .zIndex(1.5f)
+                                    .pointerInput(Unit) {
+                                        detectTapGestures {
+                                            showHistoryFloorDrawer = false
+                                        }
+                                    }
+                            )
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .width(historyDrawerWidth)
+                                .height(historyDrawerHeight)
+                                .align(Alignment.CenterStart)
+                                .offset(x = historyFloorDrawerOffset)
+                                .zIndex(2f)
+                                .pointerInput(showHistoryFloorDrawer) {
+                                    detectHorizontalDragGestures { _, dragAmount ->
+                                        if (showHistoryFloorDrawer && dragAmount < -12f) {
+                                            showHistoryFloorDrawer = false
+                                        }
+                                    }
+                                },
+                            shape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f),
+                            tonalElevation = 4.dp,
+                            shadowElevation = 3.dp
+                        ) {
+                            if (floorNumbers.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "\u6682\u65e0\u697c\u5c42",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(floorNumbers, key = { it }) { floorNumber ->
+                                        FloorNavItem(
+                                            label = floorLabel(floorNumber),
+                                            selected = selectedHistoryFloor == floorNumber,
+                                            onClick = {
+                                                selectedHistoryFloor = floorNumber
+                                                showHistoryFloorDrawer = false
+                                            },
+                                            onLongClick = {}
+                                        )
                                     }
                                 }
                             }
@@ -3600,12 +3667,14 @@ private fun HistoryBillPage(
             dismissButton = {}
         )
     }
+
 }
 
 @Composable
 private fun HistoryBillRow(
     room: RoomUiState,
     monthValue: RoomMonthlyValue,
+    referenceValue: RoomMonthlyValue,
     placeholderValue: RoomMonthlyValue,
     editable: Boolean,
     onRequestEditAccess: () -> Unit,
@@ -3613,8 +3682,8 @@ private fun HistoryBillRow(
     onWaterMeterChange: (String) -> Unit,
     onElectricMeterChange: (String) -> Unit
 ) {
-    val waterMeterInvalid = isMeterLowerThanPrevious(monthValue.waterMeter, placeholderValue.waterMeter)
-    val electricMeterInvalid = isMeterLowerThanPrevious(monthValue.electricMeter, placeholderValue.electricMeter)
+    val waterMeterInvalid = isMeterLowerThanPrevious(monthValue.waterMeter, referenceValue.waterMeter)
+    val electricMeterInvalid = isMeterLowerThanPrevious(monthValue.electricMeter, referenceValue.electricMeter)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -3624,61 +3693,54 @@ private fun HistoryBillRow(
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Surface(
-                    modifier = Modifier.width(110.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 28.dp),
+                            .padding(vertical = 16.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = room.roomNumber.toString(),
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
 
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    HistoryValueRow(
-                        label = "\u623f\u79df",
-                        value = monthValue.rent,
-                        placeholder = placeholderValue.rent,
-                        readOnly = !editable,
-                        displayFallbackAsValue = true,
-                        onValueChange = onRentChange
-                    )
-                    HistoryValueRow(
-                        label = "\u6c34\u8868",
-                        value = monthValue.waterMeter,
-                        placeholder = placeholderValue.waterMeter,
-                        isError = waterMeterInvalid,
-                        readOnly = !editable,
-                        onValueChange = onWaterMeterChange
-                    )
-                    HistoryValueRow(
-                        label = "\u7535\u8868",
-                        value = monthValue.electricMeter,
-                        placeholder = placeholderValue.electricMeter,
-                        isError = electricMeterInvalid,
-                        readOnly = !editable,
-                        onValueChange = onElectricMeterChange
-                    )
-                }
+                HistoryValueRow(
+                    label = "\u623f\u79df",
+                    value = monthValue.rent,
+                    placeholder = placeholderValue.rent,
+                    readOnly = !editable,
+                    onValueChange = onRentChange
+                )
+                HistoryValueRow(
+                    label = "\u6c34\u8868",
+                    value = monthValue.waterMeter,
+                    placeholder = placeholderValue.waterMeter,
+                    isError = waterMeterInvalid,
+                    readOnly = !editable,
+                    onValueChange = onWaterMeterChange
+                )
+                HistoryValueRow(
+                    label = "\u7535\u8868",
+                    value = monthValue.electricMeter,
+                    placeholder = placeholderValue.electricMeter,
+                    isError = electricMeterInvalid,
+                    readOnly = !editable,
+                    onValueChange = onElectricMeterChange
+                )
             }
 
             if (!editable) {
@@ -3701,34 +3763,47 @@ private fun HistoryBillRow(
 private fun HistoryValueRow(
     label: String,
     value: String,
-    placeholder: String,
+    placeholder: String = "",
     isError: Boolean = false,
     readOnly: Boolean = false,
-    displayFallbackAsValue: Boolean = false,
     onValueChange: (String) -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.width(56.dp),
-            textAlign = TextAlign.Center
-        )
+        Surface(
+            modifier = Modifier.width(48.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
 
-        UnifiedValueField(
-            modifier = Modifier.weight(1f),
-            value = value,
-            placeholder = placeholder,
-            isError = isError,
-            readOnly = readOnly,
-            displayFallbackAsValue = displayFallbackAsValue,
-            onValueChange = onValueChange
-        )
+        Box(modifier = Modifier.weight(1f)) {
+            UnifiedValueField(
+                modifier = Modifier.fillMaxWidth(),
+                value = value,
+                placeholder = placeholder,
+                isError = isError,
+                readOnly = readOnly,
+                fieldHeight = 54.dp,
+                onValueChange = onValueChange
+            )
+        }
     }
 }
 
@@ -3810,7 +3885,6 @@ private fun RoomValueRow(
     value: String,
     placeholder: String,
     isError: Boolean = false,
-    displayFallbackAsValue: Boolean = false,
     onValueChange: (String) -> Unit
 ) {
     Row(
@@ -3830,7 +3904,6 @@ private fun RoomValueRow(
             value = value,
             placeholder = placeholder,
             isError = isError,
-            displayFallbackAsValue = displayFallbackAsValue,
             onValueChange = onValueChange
         )
     }
@@ -3843,15 +3916,11 @@ private fun UnifiedValueField(
     placeholder: String = "",
     isError: Boolean = false,
     readOnly: Boolean = false,
-    displayFallbackAsValue: Boolean = false,
+    fieldHeight: Dp = 66.dp,
     onValueChange: (String) -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    val displayValue = when {
-        value.isNotBlank() -> value
-        displayFallbackAsValue && !isFocused && placeholder.isNotBlank() -> placeholder
-        else -> ""
-    }
+    val displayValue = value
 
     var fieldValue by remember(displayValue) {
         mutableStateOf(
@@ -3876,12 +3945,6 @@ private fun UnifiedValueField(
             if (focusState.isFocused) {
                 if (!isFocused) {
                     isFocused = true
-                    if (displayFallbackAsValue && value.isBlank() && placeholder.isNotBlank()) {
-                        fieldValue = TextFieldValue(
-                            text = "",
-                            selection = TextRange.Zero
-                        )
-                    }
                 }
             } else if (isFocused) {
                 isFocused = false
@@ -3929,7 +3992,7 @@ private fun UnifiedValueField(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(66.dp)
+                        .height(fieldHeight)
                         .padding(horizontal = 18.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -4002,6 +4065,18 @@ private fun formatMoneyTruncated(value: Double): String {
     return "\u00A5${value.toInt()}"
 }
 
+@Composable
+private fun rememberIsCompactPhoneWidth(): Boolean {
+    val configuration = LocalConfiguration.current
+    return configuration.screenWidthDp <= 430
+}
+
+@Composable
+private fun adaptiveDialogWidth(maxWidth: Dp, widthFraction: Float = 0.88f): Dp {
+    val configuration = LocalConfiguration.current
+    return (configuration.screenWidthDp.dp * widthFraction).coerceAtMost(maxWidth)
+}
+
 private fun formatNumber(value: Double): String {
     return if (kotlin.math.abs(value - value.toInt()) < 0.0001) {
         value.toInt().toString()
@@ -4067,13 +4142,84 @@ private fun calculateRoomCharge(
     electricUnitPrice: Double
 ): Double {
     val currentMonthValue = room.effectiveValuesForMonth(month)
-    val previousMonthValue = room.valuesForMonth(month.minusMonths(1))
+    val previousMonthValue = room.referenceValuesBeforeMonth(month)
     val rentAmount = currentMonthValue.rent.toDoubleOrNull() ?: 0.0
     val waterUsage = ((currentMonthValue.waterMeter.toDoubleOrNull() ?: 0.0) -
         (previousMonthValue.waterMeter.toDoubleOrNull() ?: 0.0)).coerceAtLeast(0.0)
     val electricUsage = ((currentMonthValue.electricMeter.toDoubleOrNull() ?: 0.0) -
         (previousMonthValue.electricMeter.toDoubleOrNull() ?: 0.0)).coerceAtLeast(0.0)
     return rentAmount + (waterUsage * waterUnitPrice) + (electricUsage * electricUnitPrice)
+}
+
+private fun buildSettlementImageFileName(
+    roomNumber: Int,
+    month: YearMonth
+): String {
+    return "settlement-${month.year}-${month.monthValue.toString().padStart(2, '0')}-room-$roomNumber.png"
+}
+
+private fun saveSettlementDialogImageToAlbum(
+    context: android.content.Context,
+    sourceView: View?,
+    bounds: Rect?,
+    fileName: String
+): Result<String> = runCatching {
+    val dialogView = sourceView ?: error("弹窗尚未准备好")
+    val dialogBounds = bounds ?: error("未获取到弹窗范围")
+    val rootView = dialogView.rootView
+    if (rootView.width <= 0 || rootView.height <= 0) {
+        error("当前弹窗还未完成渲染")
+    }
+
+    val fullBitmap = Bitmap.createBitmap(
+        rootView.width,
+        rootView.height,
+        Bitmap.Config.ARGB_8888
+    )
+    val fullCanvas = Canvas(fullBitmap)
+    rootView.draw(fullCanvas)
+
+    val left = dialogBounds.left.roundToInt().coerceIn(0, rootView.width - 1)
+    val top = dialogBounds.top.roundToInt().coerceIn(0, rootView.height - 1)
+    val right = dialogBounds.right.roundToInt().coerceIn(left + 1, rootView.width)
+    val bottom = dialogBounds.bottom.roundToInt().coerceIn(top + 1, rootView.height)
+    val croppedBitmap = Bitmap.createBitmap(fullBitmap, left, top, right - left, bottom - top)
+    fullBitmap.recycle()
+
+    val resolver = context.contentResolver
+    val contentValues = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+        put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/RentLedger")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+    }
+
+    val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        ?: error("无法创建图片文件")
+
+    try {
+        resolver.openOutputStream(uri)?.use { outputStream ->
+            if (!croppedBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)) {
+                error("图片写入失败")
+            }
+        } ?: error("无法打开图片输出流")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val completedValues = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            resolver.update(uri, completedValues, null, null)
+        }
+    } catch (throwable: Throwable) {
+        resolver.delete(uri, null, null)
+        throw throwable
+    } finally {
+        croppedBitmap.recycle()
+    }
+
+    fileName
 }
 
 private fun formatMonthLabel(month: YearMonth): String {

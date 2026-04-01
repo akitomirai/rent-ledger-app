@@ -55,13 +55,48 @@ fun RoomUiState.valuesForMonth(month: YearMonth): RoomMonthlyValue {
     return monthlyValues[month.toString()] ?: RoomMonthlyValue()
 }
 
+fun RoomUiState.referenceValuesBeforeMonth(month: YearMonth): RoomMonthlyValue {
+    fun resolve(selector: (RoomMonthlyValue) -> String): String {
+        return monthlyValues.entries
+            .asSequence()
+            .mapNotNull { (rawMonth, monthlyValue) ->
+                val parsedMonth = runCatching { YearMonth.parse(rawMonth) }.getOrNull() ?: return@mapNotNull null
+                if (!parsedMonth.isBefore(month)) return@mapNotNull null
+                selector(monthlyValue)
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+                    ?.let { parsedMonth to it }
+            }
+            .sortedByDescending { it.first }
+            .map { it.second }
+            .firstOrNull()
+            .orEmpty()
+    }
+
+    return RoomMonthlyValue(
+        rent = resolve(RoomMonthlyValue::rent),
+        waterMeter = resolve(RoomMonthlyValue::waterMeter),
+        electricMeter = resolve(RoomMonthlyValue::electricMeter)
+    )
+}
+
+fun RoomUiState.displayValuesForMonth(month: YearMonth): RoomMonthlyValue {
+    val currentValue = valuesForMonth(month)
+    val referenceValue = referenceValuesBeforeMonth(month)
+    return RoomMonthlyValue(
+        rent = currentValue.rent.ifBlank { referenceValue.rent },
+        waterMeter = currentValue.waterMeter.ifBlank { referenceValue.waterMeter },
+        electricMeter = currentValue.electricMeter.ifBlank { referenceValue.electricMeter }
+    )
+}
+
 fun RoomUiState.effectiveValuesForMonth(month: YearMonth): RoomMonthlyValue {
     val currentValue = valuesForMonth(month)
     if (currentValue.rent.isNotBlank()) {
         return currentValue
     }
 
-    val previousRent = valuesForMonth(month.minusMonths(1)).rent
+    val previousRent = referenceValuesBeforeMonth(month).rent
     return if (previousRent.isBlank()) {
         currentValue
     } else {

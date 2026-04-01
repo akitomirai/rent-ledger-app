@@ -145,6 +145,35 @@ object RentLedgerXlsxTransfer {
     fun suggestedTemplateFileName(): String {
         return "rent-ledger-template-${todayStamp()}.xlsx"
     }
+
+    internal fun exportWorkbookBytesForTest(
+        apartments: List<ApartmentUiState>,
+        selectedApartmentName: String?
+    ): ByteArray {
+        return buildWorkbookBytes(
+            listOf(
+                WorkbookSheet(
+                    name = BASE_SHEET_NAME,
+                    rows = buildBaseRows(apartments, selectedApartmentName)
+                ),
+                WorkbookSheet(
+                    name = HISTORY_SHEET_NAME,
+                    rows = buildHistoryRows(apartments)
+                ),
+                WorkbookSheet(
+                    name = COLLECTION_SHEET_NAME,
+                    rows = buildCollectionRows(apartments)
+                )
+            )
+        )
+    }
+
+    internal fun importWorkbookBytesForTest(
+        workbookBytes: ByteArray,
+        defaultApartments: List<ApartmentUiState>
+    ): PersistedAppState {
+        return parseWorkbookBytes(workbookBytes, defaultApartments)
+    }
 }
 
 private fun buildBaseRows(
@@ -255,29 +284,29 @@ private fun buildBaseTemplateRows(): List<List<String>> {
         baseHeaderRow(),
         buildBaseRow(
             recordType = RecordType.Note,
-            apartmentName = "???????",
+            apartmentName = "填写说明：这一行只作说明，不会被导入",
             selected = false,
-            floorNumber = "??????",
-            roomNumber = "??????",
-            roomStatus = "????????????/???/?????/????/??",
-            waterFee = "??????",
-            electricFee = "??????"
+            floorNumber = "楼层记录填楼层号",
+            roomNumber = "房间记录填房间号",
+            roomStatus = "房间状态可填：已租且交租/未填写/已租未交租/已租拖欠/未租",
+            waterFee = "公寓记录填水价",
+            electricFee = "公寓记录填电价"
         ),
         buildBaseRow(
             recordType = RecordType.Apartment,
-            apartmentName = "????",
+            apartmentName = "示例公寓",
             selected = true,
             waterFee = "3.00",
             electricFee = "0.80"
         ),
         buildBaseRow(
             recordType = RecordType.Floor,
-            apartmentName = "????",
+            apartmentName = "示例公寓",
             floorNumber = "2"
         ),
         buildBaseRow(
             recordType = RecordType.Room,
-            apartmentName = "????",
+            apartmentName = "示例公寓",
             floorNumber = "2",
             roomNumber = "201",
             roomStatus = statusLabel(RoomCardStatus.Unfilled)
@@ -289,18 +318,18 @@ private fun buildHistoryTemplateRows(): List<List<String>> {
     return listOf(
         historyHeaderRow(),
         buildHistoryRow(
-            apartmentName = "???????",
-            floorNumber = "???",
-            roomNumber = "???",
-            month = "?????2026-03",
-            monthStatus = "????????/???/?????/????/??",
-            rent = "?????",
-            waterMeter = "?????",
-            electricMeter = "?????",
+            apartmentName = "填写说明：这一行只作说明，不会被导入",
+            floorNumber = "楼层号",
+            roomNumber = "房间号",
+            month = "月份示例：2026-03",
+            monthStatus = "月份状态可填：已租且交租/未填写/已租未交租/已租拖欠/未租",
+            rent = "房租填这里",
+            waterMeter = "水表填这里",
+            electricMeter = "电表填这里",
             recordType = RecordType.Note
         ),
         buildHistoryRow(
-            apartmentName = "????",
+            apartmentName = "示例公寓",
             floorNumber = "2",
             roomNumber = "201",
             month = "2026-03",
@@ -316,8 +345,8 @@ private fun buildCollectionTemplateRows(): List<List<String>> {
     return listOf(
         collectionHeaderRow(),
         buildCollectionRow(
-            category = "?????????????",
-            apartmentName = "?????????????",
+            category = "查看说明",
+            apartmentName = "这个工作表用于查看应收/已收/拖欠汇总，不参与导入",
             month = "",
             floorNumber = "",
             roomNumber = "",
@@ -987,22 +1016,22 @@ private fun String.toRecordTypeOrNull(): RecordType? {
 
 private fun parseRoomStatus(rawValue: String): RoomCardStatus? {
     return when (normalizeToken(rawValue)) {
-        normalizeToken("?????"), normalizeToken("paid") -> RoomCardStatus.Paid
-        normalizeToken("???"), normalizeToken("unfilled"), normalizeToken("pending") -> RoomCardStatus.Unfilled
-        normalizeToken("?????"), normalizeToken("unpaid") -> RoomCardStatus.Unpaid
-        normalizeToken("????"), normalizeToken("??"), normalizeToken("overdue") -> RoomCardStatus.Overdue
-        normalizeToken("??"), normalizeToken("vacant") -> RoomCardStatus.Vacant
+        normalizeToken("已租且交租"), normalizeToken("paid") -> RoomCardStatus.Paid
+        normalizeToken("未填写"), normalizeToken("unfilled"), normalizeToken("pending") -> RoomCardStatus.Unfilled
+        normalizeToken("已租未交租"), normalizeToken("unpaid") -> RoomCardStatus.Unpaid
+        normalizeToken("已租拖欠"), normalizeToken("拖欠"), normalizeToken("overdue") -> RoomCardStatus.Overdue
+        normalizeToken("未租"), normalizeToken("vacant") -> RoomCardStatus.Vacant
         else -> null
     }
 }
 
 private fun summaryCategoryLabel(status: RoomCardStatus): String {
     return when (status) {
-        RoomCardStatus.Paid -> "??"
-        RoomCardStatus.Unfilled -> "??"
-        RoomCardStatus.Unpaid -> "??"
-        RoomCardStatus.Overdue -> "??"
-        RoomCardStatus.Vacant -> "??"
+        RoomCardStatus.Paid -> "已收"
+        RoomCardStatus.Unfilled -> "未填写"
+        RoomCardStatus.Unpaid -> "应收"
+        RoomCardStatus.Overdue -> "拖欠"
+        RoomCardStatus.Vacant -> "未租"
     }
 }
 
@@ -1026,7 +1055,7 @@ private fun calculateRoomCharge(
     electricUnitPrice: Double
 ): Double {
     val currentMonthValue = room.effectiveValuesForMonth(month)
-    val previousMonthValue = room.valuesForMonth(month.minusMonths(1))
+    val previousMonthValue = room.referenceValuesBeforeMonth(month)
     val rentAmount = currentMonthValue.rent.toDoubleOrNull() ?: 0.0
     val waterUsage = ((currentMonthValue.waterMeter.toDoubleOrNull() ?: 0.0) -
         (previousMonthValue.waterMeter.toDoubleOrNull() ?: 0.0)).coerceAtLeast(0.0)
@@ -1037,21 +1066,21 @@ private fun calculateRoomCharge(
 
 private fun statusLabel(status: RoomCardStatus): String {
     return when (status) {
-        RoomCardStatus.Paid -> "?????"
-        RoomCardStatus.Unfilled -> "???"
-        RoomCardStatus.Unpaid -> "?????"
-        RoomCardStatus.Overdue -> "????"
-        RoomCardStatus.Vacant -> "??"
+        RoomCardStatus.Paid -> "已租且交租"
+        RoomCardStatus.Unfilled -> "未填写"
+        RoomCardStatus.Unpaid -> "已租未交租"
+        RoomCardStatus.Overdue -> "已租拖欠"
+        RoomCardStatus.Vacant -> "未租"
     }
 }
 
 private fun RecordType.label(): String {
     return when (this) {
-        RecordType.Note -> "??"
-        RecordType.Apartment -> "??"
-        RecordType.Floor -> "??"
-        RecordType.Room -> "??"
-        RecordType.Monthly -> "???"
+        RecordType.Note -> "说明"
+        RecordType.Apartment -> "公寓"
+        RecordType.Floor -> "楼层"
+        RecordType.Room -> "房间"
+        RecordType.Monthly -> "月账单"
     }
 }
 
